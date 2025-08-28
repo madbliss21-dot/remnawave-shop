@@ -85,7 +85,7 @@ class RemnavaveEnhancedService:
 
                 updated_client = await api.update_user(
                     uuid=client.uuid,
-                    hwidDeviceLimit=new_device_limit
+                    hwid_device_limit=new_device_limit
                 )
 
                 if updated_client:
