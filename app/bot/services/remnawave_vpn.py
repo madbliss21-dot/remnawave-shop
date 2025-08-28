@@ -46,9 +46,13 @@ class RemnavaveVPNService:
         """Check if client exists on Remnawave"""
         try:
             async with await self._get_api_client() as api:
-                # Use telegram ID as username if available, otherwise use vpn_id
-                username = str(user.tg_id)
-                client = await api.get_user_by_username(username)
+                # Try to find user by Telegram ID first
+                client = await api.get_user_by_telegram_id(user.tg_id)
+                
+                if not client:
+                    # Fallback to username search
+                    username = str(user.tg_id)
+                    client = await api.get_user_by_username(username)
                 
                 if client:
                     logger.debug(f"Client {user.tg_id} exists on Remnawave.")
@@ -66,8 +70,13 @@ class RemnavaveVPNService:
 
         try:
             async with await self._get_api_client() as api:
-                username = str(user.tg_id)
-                client = await api.get_user_by_username(username)
+                # Try to find user by Telegram ID first
+                client = await api.get_user_by_telegram_id(user.tg_id)
+                
+                if not client:
+                    # Fallback to username search
+                    username = str(user.tg_id)
+                    client = await api.get_user_by_username(username)
 
                 if not client:
                     logger.debug(f"Client {user.tg_id} not found on Remnawave.")
@@ -99,30 +108,7 @@ class RemnavaveVPNService:
                 return client_data
 
         except Exception as e:
-            logger.error(f"Error retrieving client data for {user.tg_id}: {e}")
-            return None
-
-    async def get_key(self, user: User) -> str | None:
-        """Get subscription key for user"""
-        try:
-            async with await self._get_api_client() as api:
-                username = str(user.tg_id)
-                client = await api.get_user_by_username(username)
-                
-                if not client:
-                    logger.debug(f"Client {user.tg_id} not found for key retrieval.")
-                    return None
-
-                # Build subscription URL
-                base_url = self.config.remnavave.API_URL.rstrip('/')
-                subscription_path = self.config.remnavave.SUBSCRIPTION_URL_PATH.strip('/')
-                key = f"{base_url}/{subscription_path}/{client.short_uuid}"
-                
-                logger.debug(f"Fetched key for {user.tg_id}: {key}.")
-                return key
-
-        except Exception as e:
-            logger.error(f"Failed to get key for {user.tg_id}: {e}")
+            logger.error(f"Failed to get client data for {user.tg_id}: {e}")
             return None
 
     async def create_client(
@@ -130,48 +116,54 @@ class RemnavaveVPNService:
         user: User,
         devices: int,
         duration: int,
-        enable: bool = True,
         traffic_limit_gb: int = 0,
+        traffic_reset_strategy: str = "NO_RESET",
         tag: str | None = None,
+        description: str | None = None,
     ) -> bool:
         """Create new client on Remnawave"""
-        logger.info(f"Creating new client {user.tg_id} | {devices} devices {duration} days.")
-
         try:
             async with await self._get_api_client() as api:
-                username = str(user.tg_id)
+                # Check if client already exists
+                existing_client = await self.is_client_exists(user)
+                if existing_client:
+                    logger.warning(f"Client {user.tg_id} already exists on Remnawave.")
+                    return False
+
+                # Calculate expiration date
                 expire_at = datetime.now() + timedelta(days=duration)
+                
+                # Convert traffic limit to bytes
                 traffic_limit_bytes = traffic_limit_gb * 1024 * 1024 * 1024 if traffic_limit_gb > 0 else 0
                 
-                status = "ACTIVE" if enable else "DISABLED"
-                
+                # Prepare description
+                if not description:
+                    description = f"Created by bot for user {user.tg_id}"
+                    if tag:
+                        description += f" - Tag: {tag}"
+
+                # Create user on Remnawave
                 client = await api.create_user(
-                    username=username,
+                    username=str(user.tg_id),
                     expire_at=expire_at,
-                    status=status,
+                    status="ACTIVE",
                     traffic_limit_bytes=traffic_limit_bytes,
+                    traffic_limit_strategy=traffic_reset_strategy,
                     telegram_id=user.tg_id,
                     tag=tag,
                     hwid_device_limit=devices,
-                    description=f"Created by bot for user {user.tg_id}"
+                    description=description
                 )
 
                 if client:
-                    # Update user with short_uuid for easy access
-                    async with self.session() as session:
-                        await User.update(
-                            session=session,
-                            tg_id=user.tg_id,
-                            vpn_id=client.short_uuid
-                        )
-                    logger.info(f"Successfully created client for {user.tg_id}")
+                    logger.info(f"Successfully created client {user.tg_id} on Remnawave.")
                     return True
                 else:
-                    logger.error(f"Failed to create client for {user.tg_id}")
+                    logger.error(f"Failed to create client {user.tg_id} on Remnawave.")
                     return False
 
         except Exception as e:
-            logger.error(f"Error creating client for {user.tg_id}: {e}")
+            logger.error(f"Error creating client {user.tg_id} on Remnawave: {e}")
             return False
 
     async def update_client(
@@ -179,223 +171,255 @@ class RemnavaveVPNService:
         user: User,
         devices: int | None = None,
         duration: int | None = None,
-        replace_devices: bool = False,
-        replace_duration: bool = False,
-        enable: bool = True,
         traffic_limit_gb: int | None = None,
+        traffic_reset_strategy: str | None = None,
+        tag: str | None = None,
+        description: str | None = None,
     ) -> bool:
         """Update existing client on Remnawave"""
-        logger.info(f"Updating client {user.tg_id}.")
-
         try:
             async with await self._get_api_client() as api:
-                username = str(user.tg_id)
-                client = await api.get_user_by_username(username)
-
+                # Find existing client
+                client = await self.is_client_exists(user)
                 if not client:
-                    logger.error(f"Client {user.tg_id} not found for update.")
+                    logger.error(f"Client {user.tg_id} not found on Remnawave for update.")
                     return False
 
+                # Prepare update payload
                 update_data = {}
-
-                # Handle device limit update
-                if devices is not None:
-                    if replace_devices:
-                        update_data["hwidDeviceLimit"] = devices
-                    else:
-                        update_data["hwidDeviceLimit"] = client.hwid_device_limit + devices
-
-                # Handle expiration time update
+                
                 if duration is not None:
-                    if replace_duration:
-                        new_expire_at = datetime.now() + timedelta(days=duration)
-                    else:
-                        # Extend from current expiry time or now, whichever is later
-                        current_expiry = client.expire_at
-                        base_time = max(current_expiry, datetime.now())
-                        new_expire_at = base_time + timedelta(days=duration)
-                    
+                    new_expire_at = datetime.now() + timedelta(days=duration)
                     update_data["expireAt"] = new_expire_at
+                
+                if traffic_limit_gb is not None:
+                    traffic_limit_bytes = traffic_limit_gb * 1024 * 1024 * 1024 if traffic_limit_gb > 0 else 0
+                    update_data["trafficLimitBytes"] = traffic_limit_bytes
+                
+                if traffic_reset_strategy is not None:
+                    update_data["trafficLimitStrategy"] = traffic_reset_strategy
+                
+                if tag is not None:
+                    update_data["tag"] = tag
+                
+                if description is not None:
+                    update_data["description"] = description
+                
+                if devices is not None:
+                    update_data["hwidDeviceLimit"] = devices
 
-                # Handle traffic limit
+                # Update user on Remnawave
+                updated_client = await api.update_user(
+                    uuid=client.uuid,
+                    **update_data
+                )
+
+                if updated_client:
+                    logger.info(f"Successfully updated client {user.tg_id} on Remnawave.")
+                    return True
+                else:
+                    logger.error(f"Failed to update client {user.tg_id} on Remnawave.")
+                    return False
+
+        except Exception as e:
+            logger.error(f"Error updating client {user.tg_id} on Remnawave: {e}")
+            return False
+
+    async def extend_client(
+        self,
+        user: User,
+        days: int,
+        traffic_limit_gb: int | None = None,
+    ) -> bool:
+        """Extend client subscription"""
+        try:
+            async with await self._get_api_client() as api:
+                # Find existing client
+                client = await self.is_client_exists(user)
+                if not client:
+                    logger.error(f"Client {user.tg_id} not found on Remnawave for extension.")
+                    return False
+
+                # Calculate new expiration date
+                current_expire = client.expire_at
+                if current_expire < datetime.now():
+                    # If expired, start from now
+                    new_expire_at = datetime.now() + timedelta(days=days)
+                else:
+                    # If active, extend from current expiration
+                    new_expire_at = current_expire + timedelta(days=days)
+
+                # Prepare update payload
+                update_data = {"expireAt": new_expire_at}
+                
                 if traffic_limit_gb is not None:
                     traffic_limit_bytes = traffic_limit_gb * 1024 * 1024 * 1024 if traffic_limit_gb > 0 else 0
                     update_data["trafficLimitBytes"] = traffic_limit_bytes
 
-                # Handle status
-                status = "ACTIVE" if enable else "DISABLED"
-                if status != client.status:
-                    update_data["status"] = status
+                # Update user on Remnawave
+                updated_client = await api.update_user(
+                    uuid=client.uuid,
+                    **update_data
+                )
 
-                if update_data:
-                    updated_client = await api.update_user(uuid=client.uuid, **update_data)
-                    if updated_client:
-                        logger.info(f"Client {user.tg_id} updated successfully.")
-                        return True
-                    else:
-                        logger.error(f"Failed to update client {user.tg_id}")
-                        return False
-                else:
-                    logger.info(f"No updates needed for client {user.tg_id}")
+                if updated_client:
+                    logger.info(f"Successfully extended client {user.tg_id} by {days} days on Remnawave.")
                     return True
-
-        except Exception as e:
-            logger.error(f"Error updating client {user.tg_id}: {e}")
-            return False
-
-    async def create_subscription(self, user: User, devices: int, duration: int) -> bool:
-        """Create subscription if client doesn't exist"""
-        if not await self.is_client_exists(user):
-            return await self.create_client(user=user, devices=devices, duration=duration)
-        return False
-
-    async def extend_subscription(self, user: User, devices: int, duration: int) -> bool:
-        """Extend existing subscription"""
-        return await self.update_client(
-            user=user,
-            devices=0,  # Don't change devices for extension
-            duration=duration,
-            replace_devices=False,
-            replace_duration=False,
-        )
-
-    async def change_subscription(self, user: User, devices: int, duration: int) -> bool:
-        """Change subscription (replace current settings)"""
-        if await self.is_client_exists(user):
-            return await self.update_client(
-                user=user,
-                devices=devices,
-                duration=duration,
-                replace_devices=True,
-                replace_duration=True,
-            )
-        return False
-
-    async def process_bonus_days(self, user: User, duration: int, devices: int) -> bool:
-        """Process bonus days for user"""
-        client_exists = await self.is_client_exists(user)
-        
-        if client_exists:
-            # Extend existing subscription
-            updated = await self.update_client(
-                user=user, 
-                devices=0,  # Don't change device count for bonus
-                duration=duration,
-                replace_devices=False,
-                replace_duration=False
-            )
-            if updated:
-                logger.info(f"Extended client {user.tg_id} with additional {duration} days.")
-                return True
-        else:
-            # Create new subscription
-            created = await self.create_client(
-                user=user, 
-                devices=devices, 
-                duration=duration
-            )
-            if created:
-                logger.info(f"Created client {user.tg_id} with {duration} days.")
-                return True
-
-        return False
-
-    async def activate_promocode(self, user: User, promocode: Promocode) -> bool:
-        """Activate promocode for user"""
-        # Mark promocode as activated in database
-        async with self.session() as session:
-            activated = await Promocode.set_activated(
-                session=session,
-                code=promocode.code,
-                user_id=user.tg_id,
-            )
-
-        if not activated:
-            logger.error(f"Failed to activate promocode {promocode.code} for user {user.tg_id}.")
-            return False
-
-        logger.info(f"Begun applying promocode ({promocode.code}) to a client {user.tg_id}.")
-        success = await self.process_bonus_days(
-            user,
-            duration=promocode.duration,
-            devices=self.config.shop.BONUS_DEVICES_COUNT,
-        )
-
-        if success:
-            return True
-
-        # Rollback promocode activation if VPN creation failed
-        async with self.session() as session:
-            await Promocode.set_deactivated(session=session, code=promocode.code)
-
-        logger.warning(f"Promocode {promocode.code} not activated due to failure.")
-        return False
-
-    async def reset_user_traffic(self, user: User) -> bool:
-        """Reset user traffic"""
-        try:
-            async with await self._get_api_client() as api:
-                username = str(user.tg_id)
-                client = await api.get_user_by_username(username)
-
-                if not client:
-                    logger.error(f"Client {user.tg_id} not found for traffic reset.")
+                else:
+                    logger.error(f"Failed to extend client {user.tg_id} on Remnawave.")
                     return False
 
+        except Exception as e:
+            logger.error(f"Error extending client {user.tg_id} on Remnawave: {e}")
+            return False
+
+    async def reset_client_traffic(self, user: User) -> bool:
+        """Reset client traffic usage"""
+        try:
+            async with await self._get_api_client() as api:
+                # Find existing client
+                client = await self.is_client_exists(user)
+                if not client:
+                    logger.error(f"Client {user.tg_id} not found on Remnawave for traffic reset.")
+                    return False
+
+                # Reset traffic on Remnawave
                 success = await api.reset_user_traffic(client.uuid)
+
                 if success:
-                    logger.info(f"Successfully reset traffic for user {user.tg_id}")
+                    logger.info(f"Successfully reset traffic for client {user.tg_id} on Remnawave.")
                     return True
                 else:
-                    logger.error(f"Failed to reset traffic for user {user.tg_id}")
+                    logger.error(f"Failed to reset traffic for client {user.tg_id} on Remnawave.")
                     return False
 
         except Exception as e:
-            logger.error(f"Error resetting traffic for {user.tg_id}: {e}")
+            logger.error(f"Error resetting traffic for client {user.tg_id} on Remnawave: {e}")
             return False
 
-    async def enable_user(self, user: User) -> bool:
-        """Enable user"""
+    async def disable_client(self, user: User) -> bool:
+        """Disable client on Remnawave"""
         try:
             async with await self._get_api_client() as api:
-                username = str(user.tg_id)
-                client = await api.get_user_by_username(username)
-
+                # Find existing client
+                client = await self.is_client_exists(user)
                 if not client:
-                    logger.error(f"Client {user.tg_id} not found for enabling.")
+                    logger.error(f"Client {user.tg_id} not found on Remnawave for disable.")
                     return False
 
-                success = await api.enable_user(client.uuid)
-                if success:
-                    logger.info(f"Successfully enabled user {user.tg_id}")
-                    return True
-                else:
-                    logger.error(f"Failed to enable user {user.tg_id}")
-                    return False
-
-        except Exception as e:
-            logger.error(f"Error enabling user {user.tg_id}: {e}")
-            return False
-
-    async def disable_user(self, user: User) -> bool:
-        """Disable user"""
-        try:
-            async with await self._get_api_client() as api:
-                username = str(user.tg_id)
-                client = await api.get_user_by_username(username)
-
-                if not client:
-                    logger.error(f"Client {user.tg_id} not found for disabling.")
-                    return False
-
+                # Disable user on Remnawave
                 success = await api.disable_user(client.uuid)
+
                 if success:
-                    logger.info(f"Successfully disabled user {user.tg_id}")
+                    logger.info(f"Successfully disabled client {user.tg_id} on Remnawave.")
                     return True
                 else:
-                    logger.error(f"Failed to disable user {user.tg_id}")
+                    logger.error(f"Failed to disable client {user.tg_id} on Remnawave.")
                     return False
 
         except Exception as e:
-            logger.error(f"Error disabling user {user.tg_id}: {e}")
+            logger.error(f"Error disabling client {user.tg_id} on Remnawave: {e}")
             return False
+
+    async def enable_client(self, user: User) -> bool:
+        """Enable client on Remnawave"""
+        try:
+            async with await self._get_api_client() as api:
+                # Find existing client
+                client = await self.is_client_exists(user)
+                if not client:
+                    logger.error(f"Client {user.tg_id} not found on Remnawave for enable.")
+                    return False
+
+                # Enable user on Remnawave
+                success = await api.enable_user(client.uuid)
+
+                if success:
+                    logger.info(f"Successfully enabled client {user.tg_id} on Remnawave.")
+                    return True
+                else:
+                    logger.error(f"Failed to enable client {user.tg_id} on Remnawave.")
+                    return False
+
+        except Exception as e:
+            logger.error(f"Error enabling client {user.tg_id} on Remnawave: {e}")
+            return False
+
+    async def revoke_client_subscription(self, user: User) -> bool:
+        """Revoke client subscription on Remnawave"""
+        try:
+            async with await self._get_api_client() as api:
+                # Find existing client
+                client = await self.is_client_exists(user)
+                if not client:
+                    logger.error(f"Client {user.tg_id} not found on Remnawave for revocation.")
+                    return False
+
+                # Revoke subscription on Remnawave
+                success = await api.revoke_user_subscription(client.uuid)
+
+                if success:
+                    logger.info(f"Successfully revoked subscription for client {user.tg_id} on Remnawave.")
+                    return True
+                else:
+                    logger.error(f"Failed to revoke subscription for client {user.tg_id} on Remnawave.")
+                    return False
+
+        except Exception as e:
+            logger.error(f"Error revoking subscription for client {user.tg_id} on Remnawave: {e}")
+            return False
+
+    async def get_subscription_url(self, user: User, client_type: str = "singbox") -> str | None:
+        """Get subscription URL for client"""
+        try:
+            async with await self._get_api_client() as api:
+                # Find existing client
+                client = await self.is_client_exists(user)
+                if not client:
+                    logger.error(f"Client {user.tg_id} not found on Remnawave for subscription URL.")
+                    return None
+
+                # Get subscription URL from Remnawave
+                subscription_url = await api.get_subscription_url(client.short_uuid, client_type)
+
+                if subscription_url:
+                    logger.debug(f"Successfully retrieved subscription URL for client {user.tg_id}.")
+                    return subscription_url
+                else:
+                    logger.error(f"Failed to get subscription URL for client {user.tg_id} from Remnawave.")
+                    return None
+
+        except Exception as e:
+            logger.error(f"Error getting subscription URL for client {user.tg_id}: {e}")
+            return None
+
+    async def get_subscription_info(self, user: User) -> dict | None:
+        """Get detailed subscription information for client"""
+        try:
+            async with await self._get_api_client() as api:
+                # Find existing client
+                client = await self.is_client_exists(user)
+                if not client:
+                    logger.error(f"Client {user.tg_id} not found on Remnawave for subscription info.")
+                    return None
+
+                # Get subscription info from Remnawave
+                subscription_info = await api.get_subscription_info(client.short_uuid)
+
+                if subscription_info:
+                    logger.debug(f"Successfully retrieved subscription info for client {user.tg_id}.")
+                    return {
+                        "short_uuid": subscription_info.short_uuid,
+                        "expire_at": subscription_info.expire_at.isoformat(),
+                        "traffic_limit_bytes": subscription_info.traffic_limit_bytes,
+                        "used_traffic_bytes": subscription_info.used_traffic_bytes,
+                        "status": subscription_info.status,
+                        "username": subscription_info.username
+                    }
+                else:
+                    logger.error(f"Failed to get subscription info for client {user.tg_id} from Remnawave.")
+                    return None
+
+        except Exception as e:
+            logger.error(f"Error getting subscription info for client {user.tg_id}: {e}")
+            return None
