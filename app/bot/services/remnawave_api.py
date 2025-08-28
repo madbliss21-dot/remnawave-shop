@@ -1,7 +1,7 @@
 import logging
 import httpx
 from typing import Optional, Dict, Any, List
-from datetime import datetime
+from datetime import datetime, timezone
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
@@ -158,13 +158,14 @@ class RemnavaveApiClient:
         tag: Optional[str] = None,
         hwid_device_limit: int = 1,
         description: Optional[str] = None,
+        active_internal_squads: Optional[List[str]] = None,
         **kwargs
     ) -> Optional[RemnavaveUser]:
         """Create a new user"""
         try:
             payload = {
                 "username": username,
-                "expireAt": expire_at.isoformat(),
+                "expireAt": self._to_utc_isoformat(expire_at),
                 "status": status,
                 "trafficLimitBytes": traffic_limit_bytes,
                 "trafficLimitStrategy": traffic_limit_strategy,
@@ -177,6 +178,8 @@ class RemnavaveApiClient:
                 payload["tag"] = tag
             if description:
                 payload["description"] = description
+            if active_internal_squads:
+                payload["activeInternalSquads"] = active_internal_squads
                 
             # Add any additional kwargs
             payload.update(kwargs)
@@ -198,6 +201,12 @@ class RemnavaveApiClient:
         expire_at: Optional[datetime] = None,
         traffic_limit_bytes: Optional[int] = None,
         status: Optional[str] = None,
+        telegram_id: Optional[int] = None,
+        email: Optional[str] = None,
+        tag: Optional[str] = None,
+        hwid_device_limit: Optional[int] = None,
+        traffic_limit_strategy: Optional[str] = None,
+        active_internal_squads: Optional[List[str]] = None,
         **kwargs
     ) -> Optional[RemnavaveUser]:
         """Update user"""
@@ -205,11 +214,23 @@ class RemnavaveApiClient:
             payload = {"uuid": uuid}
             
             if expire_at:
-                payload["expireAt"] = expire_at.isoformat()
+                payload["expireAt"] = self._to_utc_isoformat(expire_at)
             if traffic_limit_bytes is not None:
                 payload["trafficLimitBytes"] = traffic_limit_bytes
             if status:
                 payload["status"] = status
+            if telegram_id is not None:
+                payload["telegramId"] = telegram_id
+            if email is not None:
+                payload["email"] = email
+            if tag is not None:
+                payload["tag"] = tag
+            if hwid_device_limit is not None:
+                payload["hwidDeviceLimit"] = hwid_device_limit
+            if traffic_limit_strategy is not None:
+                payload["trafficLimitStrategy"] = traffic_limit_strategy
+            if active_internal_squads is not None:
+                payload["activeInternalSquads"] = active_internal_squads
                 
             # Add any additional kwargs
             payload.update(kwargs)
@@ -298,13 +319,16 @@ class RemnavaveApiClient:
             response.raise_for_status()
             
             data = response.json()["response"]
+            if not data.get("isFound"):
+                return None
+            user_info = data.get("user", {})
             return SubscriptionInfo(
-                short_uuid=data["shortUuid"],
-                expire_at=datetime.fromisoformat(data["expireAt"].replace('Z', '+00:00')),
-                traffic_limit_bytes=data["trafficLimitBytes"],
-                used_traffic_bytes=data["usedTrafficBytes"],
-                status=data["status"],
-                username=data["username"]
+                short_uuid=user_info["shortUuid"],
+                expire_at=datetime.fromisoformat(user_info["expiresAt"].replace('Z', '+00:00')),
+                traffic_limit_bytes=int(user_info.get("trafficLimitBytes", 0)),
+                used_traffic_bytes=int(user_info.get("trafficUsedBytes", 0)),
+                status=user_info.get("userStatus", "ACTIVE"),
+                username=user_info.get("username", "")
             )
             
         except Exception as e:
@@ -323,8 +347,71 @@ class RemnavaveApiClient:
             logger.error(f"Failed to get subscription URL for {short_uuid}: {e}")
             return None
 
+    async def get_user_by_short_uuid(self, short_uuid: str) -> Optional[RemnavaveUser]:
+        """Get user by short UUID"""
+        try:
+            response = await self.client.get(f"/api/users/by-short-uuid/{short_uuid}")
+            if response.status_code == 404:
+                return None
+            response.raise_for_status()
+            data = response.json()["response"]
+            return self._parse_user_data(data)
+        except Exception as e:
+            logger.error(f"Failed to get user by short UUID {short_uuid}: {e}")
+            return None
+
+    async def get_users_by_tag(self, tag: str) -> List[RemnavaveUser]:
+        """Get users by tag"""
+        try:
+            response = await self.client.get(f"/api/users/by-tag/{tag}")
+            if response.status_code == 404:
+                return []
+            response.raise_for_status()
+            data = response.json()["response"]
+            return [self._parse_user_data(item) for item in data]
+        except Exception as e:
+            logger.error(f"Failed to get users by tag {tag}: {e}")
+            return []
+
+    async def bulk_update_users(self, uuids: List[str], fields: Dict[str, Any]) -> int:
+        """Bulk update users by UUIDs. Returns number of affected rows."""
+        try:
+            payload = {"uuids": uuids, "fields": fields}
+            response = await self.client.post("/api/users/bulk/update", json=payload)
+            response.raise_for_status()
+            return int(response.json()["response"].get("affectedRows", 0))
+        except Exception as e:
+            logger.error(f"Failed to bulk update users: {e}")
+            return 0
+
+    async def get_user_accessible_nodes(self, uuid: str) -> Optional[Dict[str, Any]]:
+        """Get user accessible nodes metadata"""
+        try:
+            response = await self.client.get(f"/api/users/{uuid}/accessible-nodes")
+            if response.status_code == 404:
+                return None
+            response.raise_for_status()
+            return response.json().get("response")
+        except Exception as e:
+            logger.error(f"Failed to get accessible nodes for user {uuid}: {e}")
+            return None
+
     def _parse_user_data(self, data: Dict[str, Any]) -> RemnavaveUser:
         """Parse user data from API response"""
+        # Normalize activeInternalSquads to list of UUID strings
+        raw_squads = data.get("activeInternalSquads", [])
+        if isinstance(raw_squads, list):
+            normalized_squads: List[str] = []
+            for item in raw_squads:
+                if isinstance(item, dict):
+                    uuid_value = item.get("uuid") or item.get("id")
+                    if uuid_value:
+                        normalized_squads.append(uuid_value)
+                elif isinstance(item, str):
+                    normalized_squads.append(item)
+        else:
+            normalized_squads = []
+
         return RemnavaveUser(
             uuid=data["uuid"],
             short_uuid=data["shortUuid"],
@@ -345,7 +432,7 @@ class RemnavaveApiClient:
             trojan_password=data.get("trojanPassword"),
             vless_uuid=data.get("vlessUuid"),
             ss_password=data.get("ssPassword"),
-            active_internal_squads=data.get("activeInternalSquads", [])
+            active_internal_squads=normalized_squads,
         )
 
     def _parse_node_data(self, data: Dict[str, Any]) -> RemnavaveNode:
@@ -372,3 +459,15 @@ class RemnavaveApiClient:
             country_code=data["countryCode"],
             consumption_multiplier=data.get("consumptionMultiplier", 1.0)
         )
+
+    def _to_utc_isoformat(self, value: datetime) -> str:
+        """Convert datetime to ISO string with Z suffix in UTC"""
+        try:
+            dt = value.astimezone(timezone.utc) if value.tzinfo else value.replace(tzinfo=timezone.utc)
+            iso = dt.isoformat(timespec="milliseconds")
+            if iso.endswith("+00:00"):
+                iso = iso[:-6] + "Z"
+            return iso
+        except Exception:
+            # Fallback to default isoformat
+            return value.isoformat()

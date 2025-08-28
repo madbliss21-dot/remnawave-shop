@@ -6,7 +6,8 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from redis.asyncio.client import Redis
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.bot.services import NotificationService, VPNService
+from app.bot.services.notification import NotificationService
+from app.bot.services.remnawave_vpn import RemnavaveVPNService
 from app.db.models import User
 
 logger = logging.getLogger(__name__)
@@ -16,7 +17,7 @@ async def notify_users_with_expiring_subscription(
     session_factory: async_sessionmaker,
     redis: Redis,
     i18n: I18n,
-    vpn_service: VPNService,
+    vpn_service: RemnavaveVPNService,
     notification_service: NotificationService,
 ) -> None:
     session: AsyncSession
@@ -75,7 +76,7 @@ def start_scheduler(
     session_factory: async_sessionmaker,
     redis: Redis,
     i18n: I18n,
-    vpn_service: VPNService,
+    vpn_service: RemnavaveVPNService,
     notification_service: NotificationService,
 ) -> None:
     scheduler = AsyncIOScheduler()
