@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from app.bot.services import VPNService
+    from app.bot.services.remnawave_vpn import RemnavaveVPNService
 
 import logging
 
@@ -20,7 +20,7 @@ class SubscriptionService:
         self,
         config: Config,
         session_factory: async_sessionmaker,
-        vpn_service: VPNService,
+        vpn_service: RemnavaveVPNService,
     ) -> None:
         self.config = config
         self.session_factory = session_factory

@@ -113,12 +113,11 @@ class RemnavaveVPNService:
                     logger.debug(f"Client {user.tg_id} not found for key retrieval.")
                     return None
 
-                # Build subscription URL
+                # Build subscription URL - the endpoint returns config, not URL, so we build URL
                 base_url = self.config.remnavave.API_URL.rstrip('/')
-                subscription_path = self.config.remnavave.SUBSCRIPTION_URL_PATH.strip('/')
-                key = f"{base_url}/{subscription_path}/{client.short_uuid}"
+                key = f"{base_url}/api/sub/{client.short_uuid}/singbox"
                 
-                logger.debug(f"Fetched key for {user.tg_id}: {key}.")
+                logger.debug(f"Built subscription URL for {user.tg_id}: {key}.")
                 return key
 
         except Exception as e:
@@ -201,9 +200,9 @@ class RemnavaveVPNService:
                 # Handle device limit update
                 if devices is not None:
                     if replace_devices:
-                        update_data["hwidDeviceLimit"] = devices
+                        update_data["hwid_device_limit"] = devices
                     else:
-                        update_data["hwidDeviceLimit"] = client.hwid_device_limit + devices
+                        update_data["hwid_device_limit"] = client.hwid_device_limit + devices
 
                 # Handle expiration time update
                 if duration is not None:
@@ -215,12 +214,12 @@ class RemnavaveVPNService:
                         base_time = max(current_expiry, datetime.now())
                         new_expire_at = base_time + timedelta(days=duration)
                     
-                    update_data["expireAt"] = new_expire_at
+                    update_data["expire_at"] = new_expire_at
 
                 # Handle traffic limit
                 if traffic_limit_gb is not None:
                     traffic_limit_bytes = traffic_limit_gb * 1024 * 1024 * 1024 if traffic_limit_gb > 0 else 0
-                    update_data["trafficLimitBytes"] = traffic_limit_bytes
+                    update_data["traffic_limit_bytes"] = traffic_limit_bytes
 
                 # Handle status
                 status = "ACTIVE" if enable else "DISABLED"
@@ -399,3 +398,54 @@ class RemnavaveVPNService:
         except Exception as e:
             logger.error(f"Error disabling user {user.tg_id}: {e}")
             return False
+
+    async def get_limit_ip(self, user: User, client: RemnavaveUser = None) -> int | None:
+        """Get device limit for user (compatibility method)"""
+        try:
+            if not client:
+                client = await self.is_client_exists(user)
+            
+            if not client:
+                logger.debug(f"Client {user.tg_id} not found for limit IP retrieval.")
+                return None
+                
+            return client.hwid_device_limit
+            
+        except Exception as e:
+            logger.error(f"Error getting limit IP for {user.tg_id}: {e}")
+            return None
+
+    async def delete_client(self, user: User) -> bool:
+        """Delete client (compatibility method)"""
+        try:
+            async with await self._get_api_client() as api:
+                username = str(user.tg_id)
+                client = await api.get_user_by_username(username)
+
+                if not client:
+                    logger.debug(f"Client {user.tg_id} not found for deletion.")
+                    return True  # Already doesn't exist
+
+                success = await api.delete_user(client.uuid)
+                if success:
+                    logger.info(f"Successfully deleted client {user.tg_id}")
+                    # Clear server_id and vpn_id from user
+                    async with self.session() as session:
+                        await User.update(
+                            session=session,
+                            tg_id=user.tg_id,
+                            server_id=None,
+                            vpn_id=None
+                        )
+                    return True
+                else:
+                    logger.error(f"Failed to delete client {user.tg_id}")
+                    return False
+
+        except Exception as e:
+            logger.error(f"Error deleting client {user.tg_id}: {e}")
+            return False
+
+    async def revoke_client(self, user: User) -> bool:
+        """Revoke client subscription (disable user)"""
+        return await self.disable_user(user)
