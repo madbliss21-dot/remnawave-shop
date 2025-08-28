@@ -85,7 +85,7 @@ class RemnavaveEnhancedService:
 
                 updated_client = await api.update_user(
                     uuid=client.uuid,
-                    hwidDeviceLimit=new_device_limit
+                    hwid_device_limit=new_device_limit
                 )
 
                 if updated_client:
@@ -115,15 +115,15 @@ class RemnavaveEnhancedService:
                     logger.error(f"Client {user.tg_id} not found for traffic strategy update.")
                     return False
 
-                update_data = {"trafficLimitStrategy": strategy}
+                kwargs = {"traffic_limit_strategy": strategy}
                 
                 if traffic_limit_gb is not None:
                     traffic_limit_bytes = traffic_limit_gb * 1024 * 1024 * 1024
-                    update_data["trafficLimitBytes"] = traffic_limit_bytes
+                    kwargs["traffic_limit_bytes"] = traffic_limit_bytes
 
                 updated_client = await api.update_user(
                     uuid=client.uuid,
-                    **update_data
+                    **kwargs
                 )
 
                 if updated_client:
@@ -255,8 +255,8 @@ class RemnavaveEnhancedService:
                     return {}
 
                 for client_type in client_types:
-                    config_url = await api.get_subscription_url(client.short_uuid, client_type)
-                    configs[client_type] = config_url
+                    config_content = await api.get_subscription_config(client.short_uuid, client_type)
+                    configs[client_type] = config_content
 
                 logger.info(f"Retrieved {len(configs)} configs for user {user.tg_id}")
                 return configs
@@ -283,21 +283,21 @@ class RemnavaveEnhancedService:
                     logger.error(f"Client {user.tg_id} not found for protocol management.")
                     return False
 
-                update_data = {}
+                kwargs = {}
                 
                 if custom_passwords:
                     if enable_trojan and "trojan" in custom_passwords:
-                        update_data["trojanPassword"] = custom_passwords["trojan"]
+                        kwargs["trojan_password"] = custom_passwords["trojan"]
                     if enable_shadowsocks and "shadowsocks" in custom_passwords:
-                        update_data["ssPassword"] = custom_passwords["shadowsocks"]
+                        kwargs["ss_password"] = custom_passwords["shadowsocks"]
 
                 # Note: VLESS uses UUID which is typically auto-generated
                 # For custom VLESS UUID, you'd need to provide a valid UUID
 
-                if update_data:
+                if kwargs:
                     updated_client = await api.update_user(
                         uuid=client.uuid,
-                        **update_data
+                        **kwargs
                     )
 
                     if updated_client:

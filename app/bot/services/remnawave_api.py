@@ -158,6 +158,11 @@ class RemnavaveApiClient:
         tag: Optional[str] = None,
         hwid_device_limit: int = 1,
         description: Optional[str] = None,
+        email: Optional[str] = None,
+        trojan_password: Optional[str] = None,
+        vless_uuid: Optional[str] = None,
+        ss_password: Optional[str] = None,
+        active_internal_squads: Optional[List[str]] = None,
         **kwargs
     ) -> Optional[RemnavaveUser]:
         """Create a new user"""
@@ -177,6 +182,16 @@ class RemnavaveApiClient:
                 payload["tag"] = tag
             if description:
                 payload["description"] = description
+            if email:
+                payload["email"] = email
+            if trojan_password:
+                payload["trojanPassword"] = trojan_password
+            if vless_uuid:
+                payload["vlessUuid"] = vless_uuid
+            if ss_password:
+                payload["ssPassword"] = ss_password
+            if active_internal_squads:
+                payload["activeInternalSquads"] = active_internal_squads
                 
             # Add any additional kwargs
             payload.update(kwargs)
@@ -197,7 +212,14 @@ class RemnavaveApiClient:
         uuid: str,
         expire_at: Optional[datetime] = None,
         traffic_limit_bytes: Optional[int] = None,
+        traffic_limit_strategy: Optional[str] = None,
         status: Optional[str] = None,
+        hwid_device_limit: Optional[int] = None,
+        description: Optional[str] = None,
+        tag: Optional[str] = None,
+        telegram_id: Optional[int] = None,
+        email: Optional[str] = None,
+        active_internal_squads: Optional[List[str]] = None,
         **kwargs
     ) -> Optional[RemnavaveUser]:
         """Update user"""
@@ -208,8 +230,22 @@ class RemnavaveApiClient:
                 payload["expireAt"] = expire_at.isoformat()
             if traffic_limit_bytes is not None:
                 payload["trafficLimitBytes"] = traffic_limit_bytes
+            if traffic_limit_strategy:
+                payload["trafficLimitStrategy"] = traffic_limit_strategy
             if status:
                 payload["status"] = status
+            if hwid_device_limit is not None:
+                payload["hwidDeviceLimit"] = hwid_device_limit
+            if description is not None:
+                payload["description"] = description
+            if tag is not None:
+                payload["tag"] = tag
+            if telegram_id is not None:
+                payload["telegramId"] = telegram_id
+            if email is not None:
+                payload["email"] = email
+            if active_internal_squads is not None:
+                payload["activeInternalSquads"] = active_internal_squads
                 
             # Add any additional kwargs
             payload.update(kwargs)
@@ -311,8 +347,8 @@ class RemnavaveApiClient:
             logger.error(f"Failed to get subscription info for {short_uuid}: {e}")
             return None
 
-    async def get_subscription_url(self, short_uuid: str, client_type: str = "singbox") -> Optional[str]:
-        """Get subscription URL for specific client type"""
+    async def get_subscription_config(self, short_uuid: str, client_type: str = "singbox") -> Optional[str]:
+        """Get subscription configuration for specific client type"""
         try:
             response = await self.client.get(f"/api/sub/{short_uuid}/{client_type}")
             if response.status_code == 200:
@@ -320,7 +356,7 @@ class RemnavaveApiClient:
             return None
             
         except Exception as e:
-            logger.error(f"Failed to get subscription URL for {short_uuid}: {e}")
+            logger.error(f"Failed to get subscription config for {short_uuid}: {e}")
             return None
 
     def _parse_user_data(self, data: Dict[str, Any]) -> RemnavaveUser:
